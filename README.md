@@ -36,6 +36,46 @@
 - **학습 방법**: QLoRA (4-bit quantization, r=32, lora_alpha=64)
 - **학습 데이터**: `data/train.jsonl` 672건 (대학 공지, 대외활동, 공모전 등)
 - **학습 설정**: 5 에폭, lr=5e-5, batch=1, grad_accum=4, max_seq_len=2048
+- **학습된 가중치**: [HuggingFace `yunnjj72/capstone`](https://huggingface.co/yunnjj72/capstone) (private)
+
+## 학습된 가중치 다운로드
+
+학습된 LoRA 어댑터 가중치는 HuggingFace private 저장소에 있습니다.
+
+### 사전 조건
+
+1. HuggingFace 계정 생성 후 저장소 접근 권한 요청 (관리자에게 GitHub ID 또는 HF 계정명 알려주기)
+2. HuggingFace 토큰 발급: [https://huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) → `New token` → `Read` 권한
+3. 프로젝트 루트에 `.env` 파일 생성:
+
+```
+HF_TOKEN=hf_여기에토큰값
+```
+
+### 다운로드 방법
+
+```python
+import os
+from dotenv import load_dotenv
+from huggingface_hub import snapshot_download
+
+load_dotenv()
+snapshot_download(
+    repo_id="yunnjj72/capstone",
+    local_dir="outputs/v1",
+    token=os.environ["HF_TOKEN"],
+)
+```
+
+또는 CLI로:
+
+```bash
+huggingface-cli login   # 토큰 입력
+huggingface-cli download yunnjj72/capstone --local-dir outputs/v1
+```
+
+다운로드 후 `outputs/v1/` 안에 `adapter_model.safetensors`, `adapter_config.json` 등이 있으면 정상입니다.
+평가·추론은 기존대로 `python src/eval.py`, `python src/infer.py` 실행하면 됩니다.
 
 ## 폴더 구조
 
