@@ -1,8 +1,11 @@
 """
 GT 라벨 정제 (백업 후 in-place 수정):
 1. location='온라인'이면서 실제 온라인 행사 근거 없는 경우 → ''
-2. title 불가시 특수문자 제거
-3. GT detail 120자 초과 → postprocess_detail로 잘라냄
+2. location에 접수 방법이 적힌 경우 → ''
+3. '경 기' 같은 지역명 내부 공백 → '경기'로 합침
+4. title 불가시 특수문자 제거
+5. GT detail 120자 초과 → postprocess_detail로 잘라냄
+6. valid.jsonl #51 연도 오류 수정: 2023 → 2026
 """
 import json, re, shutil, sys, io
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
@@ -20,23 +23,33 @@ TARGET_FILES = [
 ]
 
 
+def compact_region(loc: str) -> str:
+    """'경 기' → '경기': 한 글자 음절이 공백으로 분리된 경우 합침."""
+    parts = loc.split(" ")
+    if len(parts) > 1 and all(len(p) == 1 and "가" <= p[0] <= "힣" for p in parts):
+        return "".join(parts)
+    return loc
+
+
 def clean_title(title: str) -> str:
     return INVISIBLE_RE.sub("", title).strip()
 
 
 def fix_location(gt: dict, user_content: str) -> tuple[dict, str]:
-    """Returns (gt, change_key) where change_key is '' if no change."""
     loc = (gt.get("location") or "").strip()
-    # 접수 방법이 location에 들어온 경우 → ''
     if _is_apply_method_location(loc):
         gt = dict(gt)
         gt["location"] = ""
         return gt, "location_apply"
-    # '온라인'인데 실제 온라인 행사 근거 없음 → ''
     if loc == "온라인" and not _has_online_event(user_content):
         gt = dict(gt)
         gt["location"] = ""
-        return gt, "location"
+        return gt, "location_online"
+    compacted = compact_region(loc)
+    if compacted != loc:
+        gt = dict(gt)
+        gt["location"] = compacted
+        return gt, "location_space"
     return gt, ""
 
 
@@ -60,7 +73,18 @@ def fix_detail(gt: dict) -> tuple[dict, bool]:
     return gt, False
 
 
-def fix_messages(sample: dict) -> tuple[dict, dict]:
+def fix_year(gt: dict, file_stem: str, idx: int) -> tuple[dict, bool]:
+    """valid.jsonl #51 연도 오류 수정: 2023 → 2026"""
+    if "valid" in file_stem and idx == 51:
+        if gt.get("start_date", "").startswith("2023"):
+            gt = dict(gt)
+            gt["start_date"] = gt["start_date"].replace("2023", "2026")
+            gt["end_date"] = gt["end_date"].replace("2023", "2026")
+            return gt, True
+    return gt, False
+
+
+def fix_messages(sample: dict, file_stem: str = "", idx: int = -1) -> tuple[dict, dict]:
     msgs = sample["messages"]
     user_content = msgs[1]["content"]
     try:
@@ -72,14 +96,15 @@ def fix_messages(sample: dict) -> tuple[dict, dict]:
     gt, loc_key = fix_location(gt, user_content)
     if loc_key:
         changes[loc_key] = True
-
     gt, c = fix_title(gt)
     if c:
         changes["title"] = True
-
     gt, c = fix_detail(gt)
     if c:
         changes["detail"] = True
+    gt, c = fix_year(gt, file_stem, idx)
+    if c:
+        changes["year_fix"] = True
 
     if not changes:
         return sample, {}
@@ -100,11 +125,11 @@ def process_file(path: Path):
     with open(path, encoding="utf-8") as f:
         lines = [l for l in f if l.strip()]
 
-    counts = {"location": 0, "title": 0, "detail": 0, "location_apply": 0}
+    counts = {"location_online": 0, "location_apply": 0, "location_space": 0, "title": 0, "detail": 0, "year_fix": 0}
     out_lines = []
-    for line in lines:
+    for idx, line in enumerate(lines):
         sample = json.loads(line)
-        fixed, changes = fix_messages(sample)
+        fixed, changes = fix_messages(sample, path.stem, idx)
         for key in changes:
             counts[key] += 1
         out_lines.append(json.dumps(fixed, ensure_ascii=False))
@@ -112,10 +137,12 @@ def process_file(path: Path):
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(out_lines) + "\n")
 
-    print(f"  location(온라인) 수정: {counts['location']}건")
+    print(f"  location(온라인) 수정:   {counts['location_online']}건")
     print(f"  location(접수방법) 수정: {counts['location_apply']}건")
-    print(f"  title 수정:    {counts['title']}건")
-    print(f"  detail 수정:   {counts['detail']}건")
+    print(f"  location(공백) 수정:     {counts['location_space']}건")
+    print(f"  title 수정:              {counts['title']}건")
+    print(f"  detail 수정:             {counts['detail']}건")
+    print(f"  연도 수정:               {counts['year_fix']}건")
     print(f"  총 {len(out_lines)}건 → 저장 완료")
 
 

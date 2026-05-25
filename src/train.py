@@ -29,7 +29,7 @@ def find_latest_checkpoint(output_dir):
         match = re.fullmatch(r"checkpoint-(\d+)", name)
         if match:
             checkpoint_path = os.path.join(output_dir, name)
-            if os.path.isdir(checkpoint_path):
+            if os.path.isdir(checkpoint_path) and os.path.exists(os.path.join(checkpoint_path, "trainer_state.json")):
                 checkpoints.append((int(match.group(1)), checkpoint_path))
     return max(checkpoints, key=lambda item: item[0])[1] if checkpoints else None
 
@@ -152,8 +152,8 @@ def main():
     summarize_text_lengths(dataset, tokenizer)
 
     peft_config = LoraConfig(
-        r=16,
-        lora_alpha=32,
+        r=32,
+        lora_alpha=64,
         lora_dropout=0.05,
         bias="none",
         task_type="CAUSAL_LM",
@@ -174,18 +174,18 @@ def main():
         per_device_eval_batch_size=1,
         gradient_accumulation_steps=4,
         learning_rate=5e-5,
-        num_train_epochs=1 if debug_mode else 4,
+        num_train_epochs=1 if debug_mode else 5,
         max_steps=5 if debug_mode else -1,
         logging_steps=1 if debug_mode else 5,
         eval_steps=5 if debug_mode else 100,
-        save_steps=500 if debug_mode else 50,
+        save_steps=500 if debug_mode else 200,
         save_strategy="no" if debug_mode else "steps",
         save_total_limit=2,
         fp16=True,
         gradient_checkpointing=True,
         gradient_checkpointing_kwargs={"use_reentrant": False},
         optim="paged_adamw_8bit",
-        eval_strategy="steps",
+        eval_strategy="steps" if debug_mode else "no",
         report_to="none",
         dataset_text_field="text",
         max_seq_length=MAX_SEQ_LENGTH,

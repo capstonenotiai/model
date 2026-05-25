@@ -16,16 +16,16 @@
 }
 ```
 
-## 현재 성능 (v1, 2026-05-25 기준)
+## 현재 성능 (v2, 2026-05-26 기준)
 
-| 지표 | 점수 |
-|------|------|
-| **calendar_ready** (title+날짜+location 모두 정확) | **66.7%** |
-| title 정확도 | 93.2% |
-| title 정규화 정확도 | 94.6% |
-| 날짜쌍 정확도 | 83.0% |
-| location 정확도 | 83.7% |
-| 유효 JSON 생성율 | 100% |
+| 지표 | v1 | **v2** |
+|------|-----|--------|
+| **calendar_ready** (title+날짜+location 모두 정확) | 66.7% | **70.7%** |
+| title 정확도 | 93.2% | 94.6% |
+| title 정규화 정확도 | 94.6% | 95.9% |
+| 날짜쌍 정확도 | 83.0% | 86.4% |
+| location 정확도 | 83.7% | 85.0% |
+| 유효 JSON 생성율 | 100% | 100% |
 
 - 평가 세트: `data/valid.jsonl` 147건
 - calendar_ready = title AND 날짜쌍 AND location 모두 정확한 비율
@@ -33,9 +33,9 @@
 ## 모델
 
 - **베이스 모델**: `meta-llama/Llama-3.1-8B-Instruct`
-- **학습 방법**: QLoRA (4-bit quantization, r=16, lora_alpha=32)
-- **학습 데이터**: `data/train.jsonl` 587건 (대학 공지, 대외활동, 공모전 등)
-- **학습 설정**: 4 에폭, lr=5e-5, batch=1, grad_accum=4, max_seq_len=2048
+- **학습 방법**: QLoRA (4-bit quantization, r=32, lora_alpha=64)
+- **학습 데이터**: `data/train.jsonl` 672건 (대학 공지, 대외활동, 공모전 등)
+- **학습 설정**: 5 에폭, lr=5e-5, batch=1, grad_accum=4, max_seq_len=2048
 
 ## 폴더 구조
 
@@ -48,7 +48,7 @@ model/
 │   ├── infer.py      # 단일 샘플 추론
 │   └── postprocess.py # location/detail 후처리
 ├── data/
-│   ├── train.jsonl   # 학습 데이터 (587건)
+│   ├── train.jsonl   # 학습 데이터 (672건)
 │   ├── valid.jsonl   # 검증 데이터 (147건)
 │   └── sample.jsonl  # 추론 테스트용 샘플 (10건)
 ├── crawler/          # 공지 크롤러
@@ -58,7 +58,8 @@ model/
 │   ├── wevity.py
 │   └── runner.py
 ├── scripts/
-│   └── fix_labels.py # GT 라벨 정제 스크립트
+│   ├── fix_labels.py    # GT 라벨 정제 스크립트
+│   └── simulate_fixes.py # 코드/GT 수정 효과 시뮬레이션
 ├── run.py            # 학습 → 평가 순차 실행
 └── requirements.txt
 ```
@@ -130,9 +131,14 @@ GT 라벨에 오류가 있을 때 `scripts/fix_labels.py`를 실행합니다:
 python scripts/fix_labels.py
 ```
 
-- '온라인 접수', '이메일 접수' 등 접수 방법이 location에 잘못 기재된 경우 → `""` 로 수정
-- 불가시 특수문자 제거
+- `location='온라인'`이면서 실제 온라인 행사 근거 없는 경우 → `""`
+- 접수 방법이 location에 잘못 기재된 경우 → `""`
+- `'경 기'` 같은 지역명 내부 공백 → `'경기'`로 합침
+- title 불가시 특수문자 제거
 - detail 120자 초과 자동 잘라내기
+- valid.jsonl #51 연도 오류 수정 (2023 → 2026)
+
+GT 라벨 수정 효과를 재학습 없이 추정하려면 `scripts/simulate_fixes.py`를 실행하세요.
 
 ## 후처리 (postprocess.py)
 

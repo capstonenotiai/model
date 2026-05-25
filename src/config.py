@@ -54,10 +54,19 @@ def normalize_text(value):
     return text.strip()
 
 
+def _compact_region(text: str) -> str:
+    """'경 기' → '경기' 처럼 한 글자 Korean 음절이 공백으로 분리된 경우 합침."""
+    parts = text.split(" ")
+    if len(parts) > 1 and all(len(p) == 1 and "가" <= p[0] <= "힣" for p in parts):
+        return "".join(parts)
+    return text
+
+
 def normalize_location(location):
     text = normalize_text(location)
     if not text:
         return ""
+    text = _compact_region(text)
     compact = re.sub(r"\s+", "", text).lower()
     non_place_patterns = {
         "온라인접수", "온라인신청", "온라인제출", "온라인지원", "온라인응모",
