@@ -1,0 +1,27 @@
+# 모델 웨이트 및 출력 (용량 큰 바이너리)
+outputs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv*/
+venv*/
+*.egg-info/
+
+# 데이터 백업
+data/*.bak
+
+# 환경 변수
+.env
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code
+.claude/
