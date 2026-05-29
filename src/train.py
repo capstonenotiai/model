@@ -1,15 +1,17 @@
+import unsloth  # must be first — patches transformers/trl before they load
+
 import json
 import os
 import re
 import time
 
-import torch
 from datasets import Dataset, DatasetDict
-from peft import LoraConfig
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, TrainerCallback
+from huggingface_hub import snapshot_download
+from unsloth import FastLanguageModel
+from transformers import TrainerCallback
 from trl import SFTConfig, SFTTrainer
 
-from config import BASE_MODEL_NAME, OUTPUT_DIR, SYSTEM_PROMPT, TRAIN_DATA_PATH, VALID_DATA_PATH
+from config import BASE_MODEL_NAME, OUTPUT_DIR, RANDOM_SEED, SYSTEM_PROMPT, TRAIN_DATA_PATH, VALID_DATA_PATH
 
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -102,31 +104,34 @@ def main():
     log(f"train_data={TRAIN_DATA_PATH}")
     log(f"valid_data={VALID_DATA_PATH}")
 
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.float16,
-        bnb_4bit_use_double_quant=True,
-    )
+    log("resolving local model path from HF cache")
+    local_model_path = snapshot_download(BASE_MODEL_NAME, local_files_only=True)
+    log(f"local_model_path={local_model_path}")
 
-    log("loading tokenizer")
-    tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL_NAME, local_files_only=True)
+    log("loading model and tokenizer with Unsloth (4bit QLoRA)")
+    model, tokenizer = FastLanguageModel.from_pretrained(
+        model_name=local_model_path,
+        max_seq_length=MAX_SEQ_LENGTH,
+        dtype=None,
+        load_in_4bit=True,
+    )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"
-    log(f"tokenizer loaded | model_max_length={tokenizer.model_max_length}")
+    log(f"model loaded | dtype={model.dtype}")
 
-    log("loading 4bit base model")
-    model = AutoModelForCausalLM.from_pretrained(
-        BASE_MODEL_NAME,
-        quantization_config=bnb_config,
-        device_map="auto",
-        local_files_only=True,
+    log("applying LoRA with Unsloth")
+    model = FastLanguageModel.get_peft_model(
+        model,
+        r=32,
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+        lora_alpha=64,
+        lora_dropout=0.05,
+        bias="none",
+        use_gradient_checkpointing="unsloth",
+        random_state=RANDOM_SEED,
     )
-    model.config.use_cache = False
-    log(f"model loaded | is_loaded_in_4bit={getattr(model, 'is_loaded_in_4bit', False)}")
-    if hasattr(model, "hf_device_map"):
-        log(f"device_map={model.hf_device_map}")
+    log("LoRA adapters applied")
 
     log("loading json datasets")
     dataset = load_jsonl_dataset(TRAIN_DATA_PATH, VALID_DATA_PATH)
@@ -151,23 +156,6 @@ def main():
     log("dataset.map formatting finished")
     summarize_text_lengths(dataset, tokenizer)
 
-    peft_config = LoraConfig(
-        r=32,
-        lora_alpha=64,
-        lora_dropout=0.05,
-        bias="none",
-        task_type="CAUSAL_LM",
-        target_modules=[
-            "q_proj",
-            "k_proj",
-            "v_proj",
-            "o_proj",
-            "gate_proj",
-            "up_proj",
-            "down_proj",
-        ],
-    )
-
     training_args = SFTConfig(
         output_dir=output_dir,
         per_device_train_batch_size=1,
@@ -181,9 +169,9 @@ def main():
         save_steps=500 if debug_mode else 200,
         save_strategy="no" if debug_mode else "steps",
         save_total_limit=2,
-        fp16=True,
+        bf16=True,
+        fp16=False,
         gradient_checkpointing=True,
-        gradient_checkpointing_kwargs={"use_reentrant": False},
         optim="paged_adamw_8bit",
         eval_strategy="steps" if debug_mode else "no",
         report_to="none",
@@ -192,6 +180,7 @@ def main():
         warmup_ratio=0.1,
         weight_decay=0.01,
         logging_first_step=True,
+        torch_empty_cache_steps=50,
     )
 
     log("initializing SFTTrainer")
@@ -200,8 +189,7 @@ def main():
         args=training_args,
         train_dataset=dataset["train"],
         eval_dataset=dataset["validation"],
-        tokenizer=tokenizer,
-        peft_config=peft_config,
+        processing_class=tokenizer,
         callbacks=[ProgressCallback()],
     )
     log("SFTTrainer initialized")

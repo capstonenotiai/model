@@ -9,8 +9,11 @@ __pycache__/
 venv*/
 *.egg-info/
 
-# 데이터 백업
+# 데이터 (학습/검증 데이터는 용량 및 보안상 제외, 샘플만 포함)
+data/*.jsonl
+!data/sample.jsonl
 data/*.bak
+data/*.xlsx
 
 # 환경 변수
 .env

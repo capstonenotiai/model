@@ -22,6 +22,12 @@ _ONLINE_APPLY_RE = re.compile(
     r"|\bemail\b.*\b(submit|apply|send)\b"
 )
 
+# title에서 주차 표기 괄호만 제거 (예: "(11월 2주차)")
+_TITLE_WEEK_RE = re.compile(
+    r"\s*[\(\[（【]\s*\d{1,2}월\s*\d{1,2}주차\s*[\)\]）】]"
+    r"|\s*[\(\[（【]\s*\d{4}년?\s*\d{1,2}월?\s*\d{1,2}주차?\s*[\)\]）】]"
+)
+
 # location 필드에 접수 방법이 적힌 경우 → '' 처리
 _APPLY_METHOD_LOC_RE = re.compile(
     r"^(온라인|이메일|우편|팩스|홈페이지|구글\s*폼|네이버\s*폼|카카오\s*폼|sns|전산|홈피)?\s*"
@@ -82,9 +88,15 @@ def postprocess_detail(detail: str, max_len: int = 120) -> str:
     return cut.rstrip()
 
 
+def postprocess_title(title: str) -> str:
+    """title에서 주차 표기 괄호만 제거."""
+    return _TITLE_WEEK_RE.sub("", title).strip()
+
+
 def postprocess(pred: dict, user_content: str) -> dict:
-    """location + detail 후처리를 적용한 새 dict 반환."""
+    """title(주차괄호) + location + detail 후처리를 적용한 새 dict 반환."""
     result = dict(pred)
+    result["title"] = postprocess_title(pred.get("title", ""))
     result["location"] = postprocess_location(pred.get("location", ""), user_content)
     result["detail"] = postprocess_detail(pred.get("detail", ""))
     return result
