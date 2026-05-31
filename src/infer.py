@@ -1,84 +1,64 @@
+"""
+infer.py — 단일 공지 추론 (Unsloth 4-bit QLoRA)
+
+단건 추론만 담당합니다. Cascade(GPT fallback) 파이프라인은 scripts/cascade_infer.py를 사용하세요.
+
+사용법:
+    cd src
+    python infer.py --auto-user "[제목]\n공지제목\n\n[본문]\n공지내용..."
+"""
 import argparse
 import json
 import re
+import sys
+from pathlib import Path
 
-import torch
-from peft import PeftModel
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from config import BASE_MODEL_NAME, MAX_NEW_TOKENS, OUTPUT_DIR, SYSTEM_PROMPT
+from unsloth import FastLanguageModel
+
+from config import BASE_MODEL_NAME, MAX_NEW_TOKENS, MAX_SEQ_LENGTH, OUTPUT_DIR, SYSTEM_PROMPT
 from postprocess import postprocess
 
 
 def load_model():
-    tokenizer = AutoTokenizer.from_pretrained(OUTPUT_DIR, local_files_only=True)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-
-    bnb_config = BitsAndBytesConfig(
+    model, tokenizer = FastLanguageModel.from_pretrained(
+        model_name=OUTPUT_DIR,
+        max_seq_length=MAX_SEQ_LENGTH,
+        dtype=None,
         load_in_4bit=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.float16,
-        bnb_4bit_use_double_quant=True,
     )
-    base_model = AutoModelForCausalLM.from_pretrained(
-        BASE_MODEL_NAME,
-        quantization_config=bnb_config,
-        device_map="auto",
-        local_files_only=True,
-    )
-    model = PeftModel.from_pretrained(base_model, OUTPUT_DIR)
-    model.generation_config.do_sample = False
-    model.generation_config.temperature = None
-    model.generation_config.top_p = None
-    model.eval()
+    FastLanguageModel.for_inference(model)
     return model, tokenizer
 
 
-def build_user_content(args):
-    if args.auto_user:
-        return args.auto_user
-    return (
-        f"[공지 제목]\n{args.title}\n\n"
-        f"[목록 날짜]\n{args.list_date}\n\n"
-        f"[날짜 후보]\n{args.date_candidates}\n\n"
-        f"[시간 후보]\n{args.time_candidates}\n\n"
-        f"[본문 핵심]\n{args.body}"
-    )
-
-
-def _extract_json(text):
-    text = text.strip().replace("```json", "```").replace("```JSON", "```")
-    for block in re.findall(r"```(.*?)```", text, re.DOTALL):
-        block = block.strip()
-        if "{" in block and "}" in block:
-            try:
-                return json.loads(block)
-            except Exception:
-                pass
-    stack, start = [], None
-    for i, ch in enumerate(text):
-        if ch == "{":
-            if not stack:
-                start = i
-            stack.append(ch)
-        elif ch == "}" and stack:
-            stack.pop()
-            if not stack and start is not None:
-                try:
-                    return json.loads(text[start : i + 1])
-                except Exception:
-                    start = None
+def _extract_json(text: str):
+    text = re.sub(r"```(?:json)?\s*", "", text)
+    text = re.sub(r"```\s*$", "", text).strip()
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+    m = re.search(r"\{.*\}", text, re.DOTALL)
+    if m:
+        try:
+            return json.loads(m.group())
+        except Exception:
+            pass
     return None
 
 
-def generate_answer(model, tokenizer, user_content):
+def generate(model, tokenizer, user_content: str) -> str:
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": user_content},
+        {"role": "user",   "content": user_content},
     ]
-    prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    prompt = tokenizer.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True
+    )
     inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+
+    import torch
     with torch.no_grad():
         outputs = model.generate(
             **inputs,
@@ -87,29 +67,39 @@ def generate_answer(model, tokenizer, user_content):
             eos_token_id=tokenizer.eos_token_id,
             pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
         )
-    input_token_count = inputs["input_ids"].shape[-1]
-    generated_tokens = outputs[0][input_token_count:]
-    raw = tokenizer.decode(generated_tokens, skip_special_tokens=True).strip()
 
-    pred_obj = _extract_json(raw)
-    if pred_obj is not None:
-        pred_obj = postprocess(pred_obj, user_content)
-        return json.dumps(pred_obj, ensure_ascii=False)
+    generated = outputs[0][inputs["input_ids"].shape[-1]:]
+    raw = tokenizer.decode(generated, skip_special_tokens=True).strip()
+
+    pred = _extract_json(raw)
+    if pred is not None:
+        pred = postprocess(pred, user_content)
+        return json.dumps(pred, ensure_ascii=False, indent=2)
     return raw
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--auto-user", default="", help="preformatted auto user message")
-    parser.add_argument("--title", default="", help="notice title")
-    parser.add_argument("--list-date", default="", help="list date")
-    parser.add_argument("--date-candidates", default="", help="date candidates")
-    parser.add_argument("--time-candidates", default="", help="time candidates")
-    parser.add_argument("--body", default="", help="core notice body")
+    parser = argparse.ArgumentParser(
+        description="단일 공지 추론. Cascade 파이프라인은 scripts/cascade_infer.py 사용."
+    )
+    parser.add_argument(
+        "--auto-user", default="",
+        help='공지 전문. 형식: "[제목]\\n제목\\n\\n[본문]\\n본문내용"'
+    )
+    parser.add_argument("--title", default="", help="공지 제목 (--auto-user 미사용 시)")
+    parser.add_argument("--body",  default="", help="공지 본문 (--auto-user 미사용 시)")
     args = parser.parse_args()
 
+    if args.auto_user:
+        user_content = args.auto_user
+    elif args.title or args.body:
+        user_content = f"[제목]\n{args.title}\n\n[본문]\n{args.body}"
+    else:
+        parser.print_help()
+        sys.exit(1)
+
     model, tokenizer = load_model()
-    print(generate_answer(model, tokenizer, build_user_content(args)))
+    print(generate(model, tokenizer, user_content))
 
 
 if __name__ == "__main__":
