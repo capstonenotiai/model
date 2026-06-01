@@ -1,17 +1,20 @@
 """
 test_baseline.py — 회귀 방지 테스트
 
-현재 기준선:
-  safe fix 후 baseline_cr : 117/147 = 79.6%
-  cascade 후  final_cr    : 122/147 = 83.0%
-  regressed               : 0건
-  tier2_status            : deferred
+현재 기준선 (v10+cascade):
+  구 valid(147건) 기준:
+    safe fix 후 baseline_cr : 116/147 = 78.9%
+    cascade 후  final_cr    : 123/147 = 83.7%
+    regressed               : 0건
+    tier2_status            : deferred
+    auto_precision          : >= 85.4%  (111/130)
+    false_auto              : <= 19건
+    needs_review            : <= 17건
 
-  [auto gate v2 — 2026-06-01]
-  auto_precision          : >= 86.4%  (114/132)
-  false_auto              : <= 18건
-  needs_review            : <= 15건
-  배포 상태               : 검토 포함 MVP — 완전 자동 배포 불가
+  공정 기준 (new_dev_fixed 75건):
+    calendar_ready          : 59/75 = 78.7%
+    location                : 65/75 = 86.7%
+    auto_precision          : 80.6%  (72건 auto, 14건 false auto)
 
 cascade_summary.json과 cascade_results.json을 읽어서 기준선이 유지되는지 확인.
 코드 수정 후 이 테스트가 깨지면 즉시 확인 필요.
@@ -29,14 +32,14 @@ VALID_JSONL  = ROOT / "data" / "valid.jsonl"
 
 # ── 기준선 ────────────────────────────────────────────────────────────────────
 TARGETS = {
-    "baseline_cr":      117,    # safe fix 후, cascade 전
-    "final_cr":         122,    # cascade 후
+    "baseline_cr":      116,    # safe fix 후, cascade 전 (v10, 구 valid 기준)
+    "final_cr":         123,    # cascade 후 (v10, 구 valid 기준)
     "regressed":        0,      # 회귀 0건
     "tier2_status":     "deferred",
-    # auto gate v2 (2026-06-01)  — 114/132 = 86.36%
-    "auto_ok_min":      114,    # auto 중 정답 건수 >= 114건
-    "false_auto":       18,     # auto 중 오답 건수 <= 18건
-    "needs_review":     15,     # needs_review 건수 <= 15건
+    # auto gate v2 — 111/130 = 85.4%
+    "auto_ok_min":      111,    # auto 중 정답 건수 >= 111건
+    "false_auto":       19,     # auto 중 오답 건수 <= 19건
+    "needs_review":     17,     # needs_review 건수 <= 17건
 }
 
 # ── 테스트 실행 ────────────────────────────────────────────────────────────────

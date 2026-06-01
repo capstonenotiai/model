@@ -615,10 +615,22 @@ if __name__ == "__main__":
                         help="단건 모드: 출력 JSON 파일 경로")
     parser.add_argument("--dry-run", action="store_true",
                         help="GPT 호출 없이 trigger 목록만 출력")
+    parser.add_argument("--eval-results", type=str, default=None,
+                        help="배치 모드: eval_results.json 경로 오버라이드")
+    parser.add_argument("--valid-data", type=str, default=None,
+                        help="배치 모드: valid JSONL 경로 오버라이드")
+    parser.add_argument("--out-dir", type=str, default=None,
+                        help="배치 모드: 결과 저장 디렉토리 오버라이드")
     args = parser.parse_args()
 
     if args.dry_run:
         DRY_RUN = True
+    if args.eval_results:
+        EVAL_RESULTS = Path(args.eval_results)
+    if args.valid_data:
+        VALID_JSONL = Path(args.valid_data)
+    if args.out_dir:
+        OUT_DIR = Path(args.out_dir)
 
     if args.input:
         # 단건 모드

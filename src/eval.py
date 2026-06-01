@@ -1,3 +1,4 @@
+import argparse
 import json
 import os
 import re
@@ -20,6 +21,25 @@ from config import (
     normalize_text,
 )
 from postprocess import postprocess
+
+# ── CLI 인자 파싱 ──────────────────────────────────────────────────────────────
+_parser = argparse.ArgumentParser(add_help=False)
+_parser.add_argument("--model-dir",  default=None, help="어댑터 로드 경로 (기본: config.OUTPUT_DIR)")
+_parser.add_argument("--output-dir", default=None, help="결과 저장 경로 (기본: config.OUTPUT_DIR)")
+_parser.add_argument("--valid-data", default=None, help="평가용 JSONL 경로 (기본: config.VALID_DATA_PATH)")
+_args, _ = _parser.parse_known_args()
+
+if _args.model_dir:
+    OUTPUT_DIR = os.path.abspath(_args.model_dir)
+if _args.valid_data:
+    VALID_DATA_PATH = os.path.abspath(_args.valid_data)
+if _args.output_dir:
+    _out = os.path.abspath(_args.output_dir)
+    EVAL_RESULTS_PATH = os.path.join(_out, "eval_results.json")
+    EVAL_SUMMARY_PATH = os.path.join(_out, "eval_summary.json")
+elif _args.model_dir:
+    EVAL_RESULTS_PATH = os.path.join(OUTPUT_DIR, "eval_results.json")
+    EVAL_SUMMARY_PATH = os.path.join(OUTPUT_DIR, "eval_summary.json")
 
 
 FIELDS = ["title", "start_date", "end_date", "location", "detail"]
