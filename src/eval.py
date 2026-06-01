@@ -22,11 +22,11 @@ from config import (
 )
 from postprocess import postprocess
 
-# ── CLI 인자 파싱 ──────────────────────────────────────────────────────────────
+# ── CLI 인자 파싱 (config.py 경로 오버라이드 가능) ────────────────────────────
 _parser = argparse.ArgumentParser(add_help=False)
 _parser.add_argument("--model-dir",  default=None, help="어댑터 로드 경로 (기본: config.OUTPUT_DIR)")
 _parser.add_argument("--output-dir", default=None, help="결과 저장 경로 (기본: config.OUTPUT_DIR)")
-_parser.add_argument("--valid-data", default=None, help="평가용 JSONL 경로 (기본: config.VALID_DATA_PATH)")
+_parser.add_argument("--valid-data", default=None, help="평가용 JSONL 경로 오버라이드 (기본: config.VALID_DATA_PATH)")
 _args, _ = _parser.parse_known_args()
 
 if _args.model_dir:
@@ -38,11 +38,18 @@ if _args.output_dir:
     EVAL_RESULTS_PATH = os.path.join(_out, "eval_results.json")
     EVAL_SUMMARY_PATH = os.path.join(_out, "eval_summary.json")
 elif _args.model_dir:
+    # model-dir만 바꿨으면 결과는 model-dir 아래에 저장
     EVAL_RESULTS_PATH = os.path.join(OUTPUT_DIR, "eval_results.json")
     EVAL_SUMMARY_PATH = os.path.join(OUTPUT_DIR, "eval_summary.json")
 
 
 FIELDS = ["title", "start_date", "end_date", "location", "detail"]
+
+_YMD_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+def _is_ymd(s):
+    """YYYY-MM-DD 형식 유효성 (문자열 비교가 곧 날짜순 비교가 되도록)."""
+    return bool(_YMD_RE.match(s or ""))
+
 DETAIL_KEYWORDS = [
     "접수",
     "신청",
@@ -212,11 +219,12 @@ def avg(values):
 
 
 def main():
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    os.makedirs(os.path.dirname(EVAL_RESULTS_PATH), exist_ok=True)
     samples = load_jsonl(VALID_DATA_PATH)
 
     print(f"base_model: {BASE_MODEL_NAME}")
     print(f"adapter_path: {OUTPUT_DIR}")
+    print(f"results_dir: {os.path.dirname(EVAL_RESULTS_PATH)}")
     print(f"valid_file: {VALID_DATA_PATH}")
     print(f"valid_samples: {len(samples)}")
 
@@ -228,13 +236,21 @@ def main():
     exact_wo_detail_count = 0
     exact_wo_detail_norm_loc_count = 0
     normalized_location_correct_count = 0
+    loose_location_correct_count = 0
     date_pair_correct_count = 0
     calendar_ready_raw_count = 0
     calendar_ready_norm_loc_count = 0
+    calendar_ready_loose_count = 0
     title_normalized_correct_count = 0
     invalid_json_truncated_count = 0
     json_valid_with_date_pair_count = 0
     date_pair_but_title_failed_count = 0
+    # ── real-use 지표 (실사용 품질, 전체 기준 — auto 비조건부) ──────────────────
+    realuse_ready_count = 0
+    date_safe_ready_count = 0
+    loc_q = {"exact": 0, "loose_only": 0, "missing": 0, "false_positive": 0, "mismatch": 0}
+    # end_date 오류 방향 프로파일 (모델 레벨, 전체 기준)
+    end_err = {"late": 0, "early": 0, "missing": 0, "gt_end_missing": 0}
     detail_f1_values = []
     detail_keyword_recall_values = []
     pred_detail_lengths = []
@@ -269,6 +285,16 @@ def main():
 
         location_norm_match = normalize_location(gt["location"]) == normalize_location(pred["location"])
         normalized_location_correct_count += int(location_norm_match)
+
+        # loose location: GT⊆PRED 또는 PRED⊆GT (상위지역명 포함 허용)
+        g_loc = gt["location"].strip()
+        p_loc = pred["location"].strip()
+        loose_loc_match = bool(
+            g_loc == p_loc
+            or (g_loc and p_loc and (p_loc in g_loc or g_loc in p_loc))
+        )
+        loose_location_correct_count += int(loose_loc_match)
+
         date_pair_match = strict_field_match["start_date"] and strict_field_match["end_date"]
         date_pair_correct_count += int(date_pair_match)
         json_valid_with_date_pair_count += int(valid_json and date_pair_match)
@@ -284,12 +310,57 @@ def main():
         )
         calendar_ready_raw = valid_json and exact_wo_detail
         calendar_ready_norm_loc = valid_json and exact_wo_detail_norm_loc
+        calendar_ready_loose = valid_json and (
+            strict_field_match["title"]
+            and strict_field_match["start_date"]
+            and strict_field_match["end_date"]
+            and loose_loc_match
+        )
 
         strict_exact_match_count += int(strict_exact)
         exact_wo_detail_count += int(exact_wo_detail)
         exact_wo_detail_norm_loc_count += int(exact_wo_detail_norm_loc)
         calendar_ready_raw_count += int(calendar_ready_raw)
         calendar_ready_norm_loc_count += int(calendar_ready_norm_loc)
+        calendar_ready_loose_count += int(calendar_ready_loose)
+
+        # ── real-use 지표 ────────────────────────────────────────────────────
+        # realuse_ready: title 정규화 + start/end exact + location loose
+        realuse_ready = valid_json and (
+            title_norm_match
+            and strict_field_match["start_date"]
+            and strict_field_match["end_date"]
+            and loose_loc_match
+        )
+        realuse_ready_count += int(realuse_ready)
+
+        # date_safe_ready: 마감일 exact + 시작일 안전(exact or 빈값) + 순서 유효
+        p_sd, p_ed = pred["start_date"], pred["end_date"]
+        start_safe = strict_field_match["start_date"] or p_sd == ""
+        order_ok = (p_sd == "") or (_is_ymd(p_sd) and _is_ymd(p_ed) and p_sd <= p_ed)
+        date_safe_ready = valid_json and strict_field_match["end_date"] and start_safe and order_ok
+        date_safe_ready_count += int(date_safe_ready)
+
+        # location_quality: 상호배타 5버킷 (합계 = 전체)
+        if g_loc == p_loc:
+            loc_q["exact"] += 1            # ""=="" 포함 (장소 없음이 정답인 경우)
+        elif g_loc and p_loc and (p_loc in g_loc or g_loc in p_loc):
+            loc_q["loose_only"] += 1       # 상위/하위 지역 포함관계
+        elif g_loc and not p_loc:
+            loc_q["missing"] += 1          # GT에 장소 있는데 예측 빔
+        elif p_loc and not g_loc:
+            loc_q["false_positive"] += 1   # GT 빈값인데 장소 출력
+        else:
+            loc_q["mismatch"] += 1         # 둘 다 있으나 무관
+
+        # end_date 오류 방향 (모델 레벨)
+        g_ed, pe = gt["end_date"], pred["end_date"]
+        if g_ed == "":
+            end_err["gt_end_missing"] += 1
+        elif pe == "":
+            end_err["missing"] += 1
+        elif _is_ymd(pe) and _is_ymd(g_ed) and pe != g_ed:
+            end_err["late" if pe > g_ed else "early"] += 1
 
         _, _, detail_f1 = detail_token_metrics(gt["detail"], pred["detail"])
         detail_kw_recall = detail_keyword_recall(gt["detail"], pred["detail"])
@@ -311,6 +382,8 @@ def main():
                 "date_pair_match": date_pair_match,
                 "calendar_ready_raw": calendar_ready_raw,
                 "calendar_ready_norm_loc": calendar_ready_norm_loc,
+                "calendar_ready_loose": calendar_ready_loose,
+                "location_loose_match": loose_loc_match,
                 "exact_match_without_detail": exact_wo_detail,
                 "exact_match_without_detail_location_normalized": exact_wo_detail_norm_loc,
                 "strict_exact_match": strict_exact,
@@ -318,6 +391,8 @@ def main():
                 "detail_keyword_recall": detail_kw_recall,
                 "pred_detail_length": pred_detail_length,
                 "pred_detail_over_120": pred_detail_length > 120,
+                "realuse_ready": realuse_ready,
+                "date_safe_ready": date_safe_ready,
             }
         )
 
@@ -333,8 +408,17 @@ def main():
         "date_pair_accuracy": rate(date_pair_correct_count, total),
         "location_accuracy": rate(strict_field_correct["location"], total),
         "location_normalized_accuracy": rate(normalized_location_correct_count, total),
-        "calendar_ready_accuracy_raw": rate(calendar_ready_raw_count, total),
+        "location_loose_accuracy": rate(loose_location_correct_count, total),  # 보조 지표
+        "calendar_ready_accuracy_raw": rate(calendar_ready_raw_count, total),  # = strict_calendar_ready (회귀 가드)
         "calendar_ready_accuracy_norm_loc": rate(calendar_ready_norm_loc_count, total),
+        "calendar_ready_accuracy_loose": rate(calendar_ready_loose_count, total),  # 보조 지표
+        # ── real-use 지표 (profile=contest, 전체 75건 기준 — auto 비조건부) ──────
+        "profile": "contest",  # campus 프로필은 CBNU 데이터 확보 후
+        "realuse_ready_accuracy": rate(realuse_ready_count, total),       # title_norm + dates exact + loc loose
+        "date_safe_ready_accuracy": rate(date_safe_ready_count, total),   # end exact + start safe + 순서 유효
+        "location_quality": loc_q,                                         # exact/loose_only/missing/false_positive/mismatch
+        "end_error_profile": end_err,                                      # late(위험)/early/missing/gt_end_missing — 모델 레벨
+        # ※ auto 조건부 dangerous_error_rate는 cascade_summary.json에서 계산 (auto 상태가 거기 있음)
         "exact_match_without_detail": rate(exact_wo_detail_count, total),
         "exact_without_detail_location_normalized": rate(exact_wo_detail_norm_loc_count, total),
         "detail_exact_accuracy": rate(strict_field_correct["detail"], total),
@@ -356,6 +440,33 @@ def main():
     print("\n===== eval summary =====")
     for key, value in summary.items():
         print(f"{key}: {value}")
+
+    # ── location 실패 리포트 ─────────────────────────────────────────────────
+    loc_fails = [r for r in results if not r["strict_field_match"]["location"]]
+    if loc_fails:
+        print(f"\n===== location 실패 {len(loc_fails)}건 =====")
+        for r in loc_fails:
+            gt_loc  = r["gt"].get("location", "")
+            pr_loc  = r["pred"].get("location", "")
+            loose   = r["location_loose_match"]
+            # 본문에서 장소 관련 키라인 추출
+            body = ""
+            raw = samples[r["index"]]["messages"][1]["content"]
+            for line in raw.splitlines():
+                if any(kw in line for kw in ["장소","위치","개최","행사","주소"]):
+                    body = line.strip()[:80]
+                    break
+            fail_type = "완전불일치"
+            if loose:
+                fail_type = "상위지역(loose OK)"
+            elif not pr_loc:
+                fail_type = "예측없음"
+            print(f"  [idx={r['index']}] {fail_type}")
+            print(f"    GT  : {gt_loc}")
+            print(f"    PRED: {pr_loc}")
+            if body:
+                print(f"    본문: {body}")
+
     print("\nsaved:")
     print(f"- {EVAL_RESULTS_PATH}")
     print(f"- {EVAL_SUMMARY_PATH}")

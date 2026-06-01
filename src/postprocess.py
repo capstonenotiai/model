@@ -34,14 +34,17 @@ _APPLY_METHOD_LOC_RE = re.compile(
     re.IGNORECASE,
 )
 
+# 이메일 주소가 포함된 location (접수처 주소) → 비장소
 _EMAIL_IN_LOC_RE = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
 
 # ── 사업장소 복원용 제외 패턴 ─────────────────────────────────────────────────
-_BUSINESS_LOC_INVALID_RE = re.compile(
+# 날짜·비장소 표현이 candidate에 포함되면 복원 금지
+_BUSSINESS_LOC_INVALID_RE = re.compile(
     r"\d{1,2}[./월]\s*\d{1,2}|20\d{2}|합격자|개별|추후|온라인|이메일|홈페이지|전국"
 )
 
 # ── 날짜 후처리 ───────────────────────────────────────────────────────────────
+# 본문에 접수 시작일이 명시된 표현
 _START_EXPLICIT_RE = re.compile(
     r"(접수|신청|모집|공모|지원)\s*기간\s*[:：]\s*\d{4}"
     r"|\d{4}[.\-/년]\s*\d{1,2}[.\-/월]\s*\d{1,2}[일]?\s*[~∼\-]"
@@ -49,6 +52,7 @@ _START_EXPLICIT_RE = re.compile(
     r"|시작\s*[:：]|개시\s*[:：]|시작일\s*[:：]"
 )
 
+# 본문에서 연도 추출 (YYYY년 / YYYY. / YYYY- / YYYY/)
 _YEAR_IN_BODY_RE = re.compile(r"(20\d{2})[년.\-/]")
 
 # ── 행정구역 전체명 → 약칭 ────────────────────────────────────────────────────
@@ -86,15 +90,18 @@ def postprocess_location(location: str, user_content: str) -> str:
     if _is_apply_method_location(loc):
         return ""
 
-    # 이메일 주소 포함 → 접수처 주소 → ''
+    # 이메일 주소 포함 → 접수처 주소로 판단 → ''
     if _EMAIL_IN_LOC_RE.search(loc):
         return ""
 
-    # '전국' → 특정 장소 없음
-    if loc == "전국":
+    # 불특정·비장소 표현 → ''
+    _NONSPECIFIC_LOC_RE = re.compile(
+        r"일원$|주요\s*공연장|주요\s*장소|공공장소|여러\s*장소|전국\s*각지|추후\s*공지|추후\s*안내|개별\s*안내|개별\s*공지"
+    )
+    if loc in ("전국",) or _NONSPECIFIC_LOC_RE.search(loc):
         return ""
 
-    # 행정구역 전체명 → 약칭
+    # 행정구역 전체명 → 약칭 (경기도→경기 등)
     loc = _ADMIN_FULL_TO_SHORT.get(loc, loc)
 
     # '온라인' 양방향 보정
@@ -107,7 +114,7 @@ def postprocess_location(location: str, user_content: str) -> str:
         # 본문에 "장소: 서울" 명시가 있으면 복원
         if re.search(r"장소\s*[:：]\s*서울", user_content):
             return "서울"
-        # "사업장소" 라벨 기반 복원 (좁은 조건)
+        # "사업장소" 라벨 기반 복원 (좁은 조건, [22] 팔복예술공장 케이스 대상)
         m = re.search(r"사업\s*장소\s*[:：]?\s*([^\n\r|]{2,40})", user_content)
         if m:
             candidate = m.group(1)
@@ -116,7 +123,7 @@ def postprocess_location(location: str, user_content: str) -> str:
                 2 <= len(candidate) <= 20
                 and not _EMAIL_IN_LOC_RE.search(candidate)
                 and not _ONLINE_APPLY_RE.search(candidate)
-                and not _BUSINESS_LOC_INVALID_RE.search(candidate)
+                and not _BUSSINESS_LOC_INVALID_RE.search(candidate)
             ):
                 return candidate
 
@@ -126,15 +133,15 @@ def postprocess_location(location: str, user_content: str) -> str:
 def postprocess_dates(start: str, end: str, user_content: str) -> tuple:
     """
     날짜 후처리:
-    1. start == end 이고 본문에 시작일 명시 없으면 start=""
-    2. pred 연도가 본문에 없는 연도면 본문 연도로 교정
+    1. start == end 이고 본문에 시작일 명시 없으면 start=""  (end→start 복사 오류 수정)
+    2. pred 연도가 본문에 전혀 없는 연도면 본문 연도로 교정
     """
     # 1. start=end 복사 패턴 제거
     if start and start == end:
         if not _START_EXPLICIT_RE.search(user_content):
             start = ""
 
-    # 2. 연도 검증
+    # 2. 연도 검증 (본문에 명시된 연도와 다르면 교정)
     years_in_body = set(_YEAR_IN_BODY_RE.findall(user_content))
     if years_in_body:
         if start and len(start) >= 4 and start[:4] not in years_in_body:

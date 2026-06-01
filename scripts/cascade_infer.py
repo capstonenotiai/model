@@ -2,7 +2,7 @@
 cascade_infer.py — Tier 1 날짜 cascade 구현
 
 흐름:
-  1. eval_results.json (v6 예측) + valid_new.jsonl 로드
+  1. eval_results.json (모델 예측) + valid.jsonl 로드
   2. 새 postprocess 재적용 (사업장소 복원 포함)
   3. apply_safe_fixes() 적용 (R1, R2)
   4. DATE_TRIGGERS 기준 get_cascade_triggers() 실행
@@ -487,6 +487,59 @@ def main_batch():
 
     stats["final_ok"] = sum(int(e.get("final_cr") or 0) for e in cascade_results)
 
+    # ── real-use / 운영 안전성 지표 (profile=contest, final_prediction 기준) ────
+    # eval_summary와 정의 동일. dangerous_error_rate는 auto 등록 항목만 대상.
+    _ymd = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+    def _loose(g, p):
+        return g == p or (g and p and (p in g or g in p))
+    ru_cnt = ds_cnt = 0
+    locq = {"exact": 0, "loose_only": 0, "missing": 0, "false_positive": 0, "mismatch": 0}
+    a_late = a_early = a_missing = a_gtmiss = auto_n = 0
+    for e, sample in zip(cascade_results, valid_data):
+        fp = e["final_prediction"]
+        gt = {f: _norm(json.loads(sample["messages"][2]["content"]).get(f, "")) for f in FIELDS}
+        gl, pl = gt["location"], _norm(fp.get("location", ""))
+        psd, ped = _norm(fp.get("start_date", "")), _norm(fp.get("end_date", ""))
+        t_ok = _norm(fp.get("title", "")) == gt["title"]
+        sd_ok = psd == gt["start_date"]
+        ed_ok = ped == gt["end_date"]
+        loose_ok = _loose(gl, pl)
+        if t_ok and sd_ok and ed_ok and loose_ok:
+            ru_cnt += 1
+        start_safe = sd_ok or psd == ""
+        order_ok = (psd == "") or (_ymd.match(psd) and _ymd.match(ped) and psd <= ped)
+        if ed_ok and start_safe and order_ok:
+            ds_cnt += 1
+        if gl == pl:                              locq["exact"] += 1
+        elif gl and pl and _loose(gl, pl):        locq["loose_only"] += 1
+        elif gl and not pl:                       locq["missing"] += 1
+        elif pl and not gl:                       locq["false_positive"] += 1
+        else:                                     locq["mismatch"] += 1
+        if e.get("auto_register_status") == "auto":
+            auto_n += 1
+            ge = gt["end_date"]
+            if ge == "":                          a_gtmiss += 1
+            elif ped == "":                       a_missing += 1
+            elif _ymd.match(ped) and _ymd.match(ge) and ped != ge:
+                if ped > ge:                      a_late += 1   # 마감 더 늦게 표시 = 위험
+                else:                             a_early += 1  # 더 이르게 = 무해
+
+    realuse_metrics = {
+        "profile": "contest",  # campus 프로필은 CBNU 데이터 확보 후
+        "realuse_ready":   ru_cnt,
+        "realuse_rate":    round(ru_cnt / total, 4),
+        "date_safe_ready": ds_cnt,
+        "date_safe_rate":  round(ds_cnt / total, 4),
+        "location_quality": locq,
+        # ── 운영 안전성 (auto 등록 대상) ─────────────────────────────────────
+        "auto_count":                   auto_n,
+        "auto_dangerous_end_error_rate": round(a_late / auto_n, 4) if auto_n else 0.0,
+        "auto_end_error_late_count":    a_late,   # pred_end > gt_end (위험)
+        "auto_end_error_early_count":   a_early,  # pred_end < gt_end (무해)
+        "auto_end_error_missing_count": a_missing,
+        "auto_gt_end_missing_count":    a_gtmiss,
+    }
+
     # ── 결과 저장 ──────────────────────────────────────────────────────────
     results_path = OUT_DIR / "cascade_results.json"
     with open(results_path, 'w', encoding='utf-8') as f:
@@ -494,7 +547,7 @@ def main_batch():
 
     summary = {
         # ── 기본 정보 ──────────────────────────────────────────────────────
-        "model":           "final_llama8b_v6",
+        "model":           "llama3.1-8b-qlora",
         "cascade_tier":    "Tier1_date_only",
         "gpt_model":       GPT_MODEL,
         "merge_dates_only": MERGE_DATES_ONLY,
@@ -515,6 +568,8 @@ def main_batch():
         "improved":          int(stats.get("improved", 0)),
         "regressed":         int(stats.get("regressed", 0)),
         "trigger_dist":      dict(trigger_dist),
+        # ── real-use / 운영 안전성 지표 ────────────────────────────────────
+        **realuse_metrics,
         # ── Tier 2 보류 사유 (참고용) ──────────────────────────────────────
         "tier2_status": "deferred",
         "tier2_reason": (
