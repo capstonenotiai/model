@@ -10,7 +10,7 @@ venv*/
 *.egg-info/
 
 # 데이터 (학습/검증 데이터는 용량 및 보안상 제외, 샘플만 포함)
-data/*.jsonl
+#data/*.jsonl
 !data/sample.jsonl
 data/*.bak
 data/*.xlsx
