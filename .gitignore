@@ -1,30 +1,15 @@
-# 모델 웨이트 및 출력 (용량 큰 바이너리)
-outputs/
-
-# Python
 __pycache__/
 *.py[cod]
-*.pyo
 .venv*/
-venv*/
-*.egg-info/
-
-# 데이터 (학습/검증 데이터는 용량 및 보안상 제외, 샘플만 포함)
-#data/*.jsonl
-!data/sample.jsonl
-data/*.bak
-data/*.xlsx
-
-# 환경 변수
 .env
-
-# IDE
-.vscode/
-.idea/
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Claude Code
-.claude/
+.env.*
+outputs/
+data/
+*.jsonl
+*.safetensors
+*.bin
+*.pt
+*.pth
+**/adapter_*
+checkpoints/
+*.log

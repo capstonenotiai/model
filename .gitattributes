@@ -1,0 +1,2 @@
+* text=auto eol=lf
+model_server/prompts/system_prompt.txt -text whitespace=cr-at-eol
